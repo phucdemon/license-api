@@ -71,47 +71,59 @@ def _build_pow_config() -> list:
     ]
 
 
-def _solve_pow(seed: str, diff: str, config: list) -> str:
-    """SHA3-512 Proof-of-Work (từ SentinelTokenGenerator._generate_answer_for_pow)."""
-    diff_len   = len(diff)
-    seed_enc   = seed.encode()
-    target     = bytes.fromhex(diff)
-    part1 = (json.dumps(config[:3],   separators=(',', ':'), ensure_ascii=False)[:-1] + ',').encode()
-    part2 = (',' + json.dumps(config[4:9],  separators=(',', ':'), ensure_ascii=False)[1:-1] + ',').encode()
-    part3 = (',' + json.dumps(config[10:],  separators=(',', ':'), ensure_ascii=False)[1:]).encode()
+def _generate_proof_token(seed: str, difficulty: str) -> str:
+    """
+    Giải PoW theo seed + difficulty do server trả về.
+    So khớp tiền tố hex của SHA3-512(seed + base64(config)) với difficulty.
+    Kết quả dùng cho header openai-sentinel-proof-token (tiền tố gAAAAAB).
+    """
+    config   = _build_pow_config()
+    diff_len = len(difficulty)
+    seed_enc = seed.encode()
 
     for i in range(MAX_ITERATION_POW):
-        enc_i = str(i).encode()
-        enc_j = str(i >> 1).encode()
-        payload = part1 + enc_i + part2 + enc_j + part3
-        b64     = pybase64.b64encode(payload)
-        if hashlib.sha3_512(seed_enc + b64).digest()[:diff_len] <= target:
-            return b64.decode()
+        config[3] = i
+        config[9] = i >> 1
+        json_data = json.dumps(config, separators=(',', ':'), ensure_ascii=False)
+        base      = pybase64.b64encode(json_data.encode()).decode()
+        h         = hashlib.sha3_512(seed_enc + base.encode()).hexdigest()
+        if h[:diff_len] <= difficulty:
+            return "gAAAAAB" + base
 
-    return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + pybase64.b64encode(f'"{seed}"'.encode()).decode()
+    # fallback nếu không tìm được đáp án trong giới hạn vòng lặp
+    return "gAAAAABwQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + pybase64.b64encode(f'"{seed}"'.encode()).decode()
 
 
-def generate_sentinel_token(session: requests.Session) -> str:
-    """POST chat-requirements, trả về chuỗi token để dùng trực tiếp làm header."""
-    config   = _build_pow_config()
-    seed     = format(random.random())
-    diff     = "0fffff"
-    solution = _solve_pow(seed, diff, config)
-    p_part   = "gAAAAAC" + solution
+def _requirements_seed_token() -> str:
+    """Token p gửi kèm request chat-requirements (PoW tối thiểu, seed rỗng)."""
+    return _generate_proof_token("", "0")
 
+
+def generate_sentinel_token(session: requests.Session) -> tuple[str, str | None]:
+    """
+    POST chat-requirements → trả về (chat_requirements_token, proof_token).
+    proof_token chỉ có giá trị khi server yêu cầu (proofofwork.required = true).
+    """
     try:
         resp = session.post(
             SENTINEL_REQ_URL,
-            data=json.dumps({"p": p_part}),
+            data=json.dumps({"p": _requirements_seed_token()}),
             headers={"Content-Type": "application/json"},
             timeout=15,
         )
         resp.raise_for_status()
-        token = resp.json().get("token", "")
-        return token or p_part
+        data = resp.json()
     except Exception as e:
         print(f"[Sentinel] Lỗi lấy token: {e}")
-        return p_part
+        return "", None
+
+    chat_token = data.get("token", "")
+    proof_token = None
+    pow_d = data.get("proofofwork") or {}
+    if pow_d.get("required"):
+        proof_token = _generate_proof_token(pow_d.get("seed", ""), pow_d.get("difficulty", ""))
+
+    return chat_token, proof_token
 
 
 # ─────────────────────────── AUTH ────────────────────────────────
@@ -177,7 +189,7 @@ class ChatGPTClient:
         """Gửi tin nhắn, trả về toàn bộ reply dạng string."""
         msg_id = str(uuid.uuid4())
 
-        sentinel = generate_sentinel_token(self.session)
+        chat_token, proof_token = generate_sentinel_token(self.session)
 
         payload = {
             "action":           "next",
@@ -198,7 +210,9 @@ class ChatGPTClient:
         if self.conversation_id:
             payload["conversation_id"] = self.conversation_id
 
-        headers = {"openai-sentinel-chat-requirements-token": sentinel}
+        headers = {"openai-sentinel-chat-requirements-token": chat_token}
+        if proof_token:
+            headers["openai-sentinel-proof-token"] = proof_token
 
         try:
             resp = self.session.post(
