@@ -38,7 +38,7 @@ USER_AGENT     = (
 # ─────────────────────────── SENTINEL TOKEN ──────────────────────
 # Sao chép và điều chỉnh từ sora_requests.py (SentinelTokenGenerator)
 
-SENTINEL_REQ_URL  = "https://chatgpt.com/backend-api/sentinel/req"
+SENTINEL_REQ_URL  = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
 MAX_ITERATION_POW = 500_000
 
 _DEFAULT_CORES          = [2, 4, 8, 12, 16]
@@ -92,14 +92,14 @@ def _solve_pow(seed: str, diff: str, config: list) -> str:
 
 
 def generate_sentinel_token(session: requests.Session, flow: str = "chat_completion") -> str:
-    """Tạo OpenAI-Sentinel-Token hoàn chỉnh (p + t + c)."""
+    """Tạo OpenAI-Sentinel-Chat-Requirements-Token (p + t + c)."""
     config  = _build_pow_config()
     seed    = format(random.random())
     diff    = "0fffff"
     solution = _solve_pow(seed, diff, config)
     p_part  = "gAAAAAC" + solution
 
-    payload = json.dumps({"p": p_part, "id": str(uuid.uuid4()), "flow": flow})
+    payload = json.dumps({"p": p_part})
     try:
         resp = session.post(
             SENTINEL_REQ_URL,
@@ -165,18 +165,20 @@ class ChatGPTClient:
         print("✓ Xác thực thành công.\n")
 
         self.session.headers.update({
-            "accept":             "*/*",
-            "accept-language":    "en-US,en;q=0.9",
-            "authorization":      f"Bearer {token}",
-            "content-type":       "application/json",
-            "origin":             "https://chatgpt.com",
-            "referer":            "https://chatgpt.com/",
-            "user-agent":         USER_AGENT,
-            "sec-ch-ua-mobile":   "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest":     "empty",
-            "sec-fetch-mode":     "cors",
-            "sec-fetch-site":     "same-origin",
+            "accept":                   "*/*",
+            "accept-language":          "en-US,en;q=0.9",
+            "authorization":            f"Bearer {token}",
+            "content-type":             "application/json",
+            "origin":                   "https://chatgpt.com",
+            "referer":                  "https://chatgpt.com/",
+            "user-agent":               USER_AGENT,
+            "oai-device-id":            str(uuid.uuid4()),
+            "oai-language":             "en-US",
+            "sec-ch-ua-mobile":         "?0",
+            "sec-ch-ua-platform":       '"Windows"',
+            "sec-fetch-dest":           "empty",
+            "sec-fetch-mode":           "cors",
+            "sec-fetch-site":           "same-origin",
         })
 
     def send(self, text: str) -> str:
@@ -204,7 +206,7 @@ class ChatGPTClient:
         if self.conversation_id:
             payload["conversation_id"] = self.conversation_id
 
-        headers = {"openai-sentinel-token": sentinel}
+        headers = {"openai-sentinel-chat-requirements-token": sentinel}
 
         try:
             resp = self.session.post(
