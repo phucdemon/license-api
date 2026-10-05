@@ -133,7 +133,7 @@ def main():
             print(f"{server:<12}{price:>10,}원{round(price * rate):>11,} ₫{status:>11}")
 
     print("-" * 49)
-    print("Giá theo đơn vị adena mà trang nguồn niêm yết.")
+    print("Giá thường niêm yết theo 1만 (10.000) adena; hãy đối chiếu với trang nguồn.")
     if failed:
         print(f"Không lấy được giá: {', '.join(failed)} (trang có thể đã đổi giao diện).")
         sys.exit(1)
