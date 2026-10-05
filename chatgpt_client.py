@@ -18,13 +18,10 @@ Lấy Cookie:
 import json
 import uuid
 import hashlib
-import random
-import time
 import re
 import sys
 import pybase64
 import requests
-from datetime import datetime, timedelta, timezone
 
 # ─────────────────────────── CẤU HÌNH ───────────────────────────
 COOKIE_STRING = ""          # Dán cookie vào đây, hoặc để trống để nhập khi chạy
@@ -36,90 +33,44 @@ USER_AGENT     = (
 )
 
 # ─────────────────────────── SENTINEL TOKEN ──────────────────────
-# Sao chép và điều chỉnh từ sora_requests.py (SentinelTokenGenerator)
 
-SENTINEL_REQ_URL  = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
-MAX_ITERATION_POW = 500_000
-
-_DEFAULT_CORES          = [2, 4, 8, 12, 16]
-_DEFAULT_CACHED_SCRIPTS = ["https://cdn.oaistatic.com/_next/static/chunks/webpack.js", ""]
-_DEFAULT_CACHED_DPL     = ["some_dpl_value_1", ""]
-_DEFAULT_NAV_KEYS       = ["webdriver", "languages", "userAgent", "platform", "doNotTrack", "appName"]
-_DEFAULT_DOC_KEYS       = ["readyState", "referrer", "visibilityState", "documentElement", "title", "URL"]
-_DEFAULT_WIN_KEYS       = ["innerWidth", "innerHeight", "screenX", "screenY", "devicePixelRatio"]
+SENTINEL_REQ_URL = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
 
 
-def _get_parse_time() -> str:
-    now = datetime.now(timezone(timedelta(hours=-5)))
-    return now.strftime("%a %b %d %Y %H:%M:%S") + " GMT-0500 (Eastern Standard Time)"
+def _solve_chat_pow(seed: str, difficulty: str) -> str:
+    """Giải PoW cho chat-requirements khi server yêu cầu (required=true)."""
+    diff_hex = difficulty.lstrip("0x")
+    if len(diff_hex) % 2:
+        diff_hex = "0" + diff_hex
+    target    = bytes.fromhex(diff_hex)
+    diff_len  = len(target)
+
+    for n in range(10_000_000):
+        candidate = f"{seed}{n}"
+        h = hashlib.sha3_512(candidate.encode()).digest()
+        if h[:diff_len] <= target:
+            answer = json.dumps({"s": seed, "n": str(n)}, separators=(',', ':'))
+            return "gAAAAAC" + pybase64.b64encode(answer.encode()).decode()
+
+    return ""
 
 
-def _build_pow_config() -> list:
-    screen_sum = random.choice([1920 + 1080, 2560 + 1440, 1920 + 1200])
-    return [
-        screen_sum, _get_parse_time(), 4294705152, 0, USER_AGENT,
-        random.choice(_DEFAULT_CACHED_SCRIPTS), random.choice(_DEFAULT_CACHED_DPL),
-        "en-US", "en-US,es-US,en,es", 0,
-        random.choice(_DEFAULT_NAV_KEYS),
-        random.choice(_DEFAULT_DOC_KEYS),
-        random.choice(_DEFAULT_WIN_KEYS),
-        time.perf_counter() * 1000,
-        str(uuid.uuid4()), "",
-        random.choice(_DEFAULT_CORES),
-        time.time() * 1000 - (time.perf_counter() * 1000),
-    ]
-
-
-def _solve_pow(seed: str, diff: str, config: list) -> str:
-    """SHA3-512 Proof-of-Work (từ SentinelTokenGenerator._generate_answer_for_pow)."""
-    diff_len   = len(diff)
-    seed_enc   = seed.encode()
-    target     = bytes.fromhex(diff)
-    part1 = (json.dumps(config[:3],   separators=(',', ':'), ensure_ascii=False)[:-1] + ',').encode()
-    part2 = (',' + json.dumps(config[4:9],  separators=(',', ':'), ensure_ascii=False)[1:-1] + ',').encode()
-    part3 = (',' + json.dumps(config[10:],  separators=(',', ':'), ensure_ascii=False)[1:]).encode()
-
-    for i in range(MAX_ITERATION_POW):
-        enc_i = str(i).encode()
-        enc_j = str(i >> 1).encode()
-        payload = part1 + enc_i + part2 + enc_j + part3
-        b64     = pybase64.b64encode(payload)
-        if hashlib.sha3_512(seed_enc + b64).digest()[:diff_len] <= target:
-            return b64.decode()
-
-    # fallback nếu không tìm được đáp án
-    return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + pybase64.b64encode(f'"{seed}"'.encode()).decode()
-
-
-def generate_sentinel_token(session: requests.Session, flow: str = "chat_completion") -> str:
-    """Tạo OpenAI-Sentinel-Chat-Requirements-Token (p + t + c)."""
-    config  = _build_pow_config()
-    seed    = format(random.random())
-    diff    = "0fffff"
-    solution = _solve_pow(seed, diff, config)
-    p_part  = "gAAAAAC" + solution
-
-    payload = json.dumps({"p": p_part})
+def generate_sentinel_token(session: requests.Session) -> str:
+    """Lấy openai-sentinel-chat-requirements-token qua GET request."""
     try:
-        resp = session.post(
-            SENTINEL_REQ_URL,
-            data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-            timeout=10,
-        )
+        resp = session.get(SENTINEL_REQ_URL, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        token = {
-            "p": p_part,
-            "t": data.get("turnstile", {}).get("dx", ""),
-            "c": data.get("token", ""),
-            "id": str(uuid.uuid4()),
-            "flow": flow,
-        }
-        return json.dumps(token)
+        data  = resp.json()
+        token = data.get("token", "")
+        pow_d = data.get("proofofwork") or {}
+        if pow_d.get("required"):
+            solved = _solve_chat_pow(pow_d.get("seed", ""), pow_d.get("difficulty", ""))
+            if solved:
+                token = solved
+        return token
     except Exception as e:
         print(f"[Sentinel] Lỗi lấy token: {e}")
-        return json.dumps({"p": p_part, "id": str(uuid.uuid4()), "flow": flow, "e": str(e)})
+        return ""
 
 
 # ─────────────────────────── AUTH ────────────────────────────────
@@ -185,7 +136,7 @@ class ChatGPTClient:
         """Gửi tin nhắn, trả về toàn bộ reply dạng string."""
         msg_id = str(uuid.uuid4())
 
-        sentinel = generate_sentinel_token(self.session, flow="chat_completion")
+        sentinel = generate_sentinel_token(self.session)
 
         payload = {
             "action":           "next",
